@@ -1,20 +1,54 @@
+import logging
 import networkx as nx
 
+log = logging.getLogger(__name__)
+MAX_FANOUT = 25
+
 class KnowledgeGraph:
-    def __init__(self):
-        self.graph = nx.DiGraph()
+    def __init__(self, api):
+        self.g = nx.DiGraph()
+        self.api = api
+        self.expanded = set()
 
-    def add_node(self, node_id, node_type):
-        self.graph.add_node(node_id, type=node_type)
+    def add_edge(self, u, v, t, w):
+        self.g.add_node(u)
+        self.g.add_node(v)
+        self.g.add_edge(u, v, type=t, weight=w)
 
-    def add_edge(self, u, v, edge_type, weight = 1.0):
-        self.graph.add_edge(u, v, type=edge_type, weight=weight)
-    
-    def neighbors(self, node):
-        return list(self.graph.successors(node))
+    def node_type(self, node: str) -> str:
+        if node.startswith(("DB", "CHEMBL")):
+            return "drug"
+        if node.startswith(("ENSG", "P", "Q")):
+            return "protein"
+        if node.startswith(("EFO", "MONDO", "HP", "OMIM", "C")):
+            return "disease"
+        return "other"
 
-    def node_type(self, node):
-        return self.graph.nodes[node]["type"]
+    def neighbors(self, node: str) -> list[str]:
+        if node not in self.g:
+            self.g.add_node(node)
+        if node not in self.expanded:
+            self.expand(node)
+        return list(self.g.successors(node))
 
-    def edge_data(self, u, v):
-        return self.graph.edges[u, v]
+    def expand(self, node: str):
+        if node in self.expanded:
+            return
+        self.expanded.add(node)
+
+        t = self.node_type(node)
+        edges = []
+        if t == "drug":
+            edges = self.api.get_drug_targets(node)
+        elif t == "protein":
+            edges = self.api.get_protein_neighbors(node)
+        elif t == "disease":
+            edges = self.api.get_gene_disease(node)
+        else:
+            log.debug("[KG] Skipping expansion of unknown node type: %s", node)
+
+        edges = edges[:MAX_FANOUT]
+        log.info("[KG] expand(%s) type=%s edges=%d", node, t, len(edges))
+
+        for u, v, r, w in edges:
+            self.add_edge(u, v, r, w)
